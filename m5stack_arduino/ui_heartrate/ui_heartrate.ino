@@ -1,0 +1,446 @@
+#include <M5Stack.h>
+#include <Wire.h>
+#include <PubSubClient.h>
+#include "WiFi.h"
+#include "MAX30100_PulseOximeter.h"
+
+//char ssid[] = "ifdl5";
+//char password[] = "hogeupip5"
+//
+//char ssid[] = "A";
+//char password[] = "hogeupip5"
+
+#define imgName heart_icon2
+#define PicArray extern unsigned char
+PicArray imgName[];
+
+#define REPORTING_PERIOD_MS     1000
+#define DISPLAY_PERIOD_MS     5*1000
+#define MEAN_FILTER_SIZE 150
+
+#define GRAPH_MODE 1
+#define INFO_MODE 0
+#define PULOXY_INTERVAL 10 //SAMPLING EVERY 10milliSECS
+#define S_SETUP 0
+#define S_LOOP 1
+
+#define BRIGHTNESS 200
+#define GRAPH_X_MAX 300
+#define GRAPH_X_MIN 20
+#define GRAPH_Y_MIDLINE 130
+#define GRAPH_Y_MAX 240
+#define GRAPH_Y_MIN 0
+#define GRAPH_SIZING 200
+#define GRAPH_BG BLACK
+#define GRAPH_FG WHITE
+#define GRAPH_MIDLINE RED
+
+
+
+
+PulseOximeter pox;
+MAX30100 sensor;
+#define SAMPLING_RATE                       MAX30100_SAMPRATE_100HZ
+#define IR_LED_CURRENT                      MAX30100_LED_CURR_50MA
+#define RED_LED_CURRENT                     MAX30100_LED_CURR_27_1MA
+#define PULSE_WIDTH                         MAX30100_SPC_PW_1600US_16BITS
+#define HIGHRES_MODE                        true
+
+
+//global var
+int displayMode = -1;
+int soundOn = 0;
+//timestamp
+unsigned long prePul_Time, preO2_Time, preInfoDisplay_Time;
+//for graph
+float w, pre_w;
+float prePulVal, pulVal;
+int nextCursor, curCursor;
+uint16_t ir, red;
+float alpha = 0.95;
+//for info
+float sumHRate = 0;
+float sumSpO2 = 0;
+float hRate = 0;
+int SpO2 = 0;
+int cnt = 0;
+int preAvgHRate = 0;
+
+struct MeanDiffFilter
+{
+  float values[MEAN_FILTER_SIZE];
+  byte index;
+  float sum;
+  byte count;
+};
+MeanDiffFilter meanDiffFilter;
+//for mean diff filter
+struct ButterworthFilter
+{
+  float v[2];
+  float result;
+};
+ButterworthFilter butterworthFilter;
+
+
+void setup() {
+  // put your setup code here, to run once:
+    M5.begin();
+//    M5.Speaker.setVolume(0);
+//    dacWrite (25, 0); //turn of noise??? 
+    M5.lcd.clear();
+    M5.lcd.setBrightness(BRIGHTNESS);
+    M5.update();
+    
+    Serial.begin(115200);
+    Serial.print("Initializing pulse oximeter..");
+    if (!pox.begin()) {
+        Serial.println("FAILED");
+        for(;;);
+    } else {
+        Serial.println("SUCCESS");
+    }
+//    pox.setOnBeatDetectedCallback(onBeatDetected);
+    if (!sensor.begin()) {
+        Serial.println("FAILED");
+        for(;;);
+    } else {
+        Serial.println("SUCCESS");
+    }
+    // Set up the wanted parameters
+    sensor.setMode(MAX30100_MODE_SPO2_HR);
+    sensor.setLedsCurrent(IR_LED_CURRENT, RED_LED_CURRENT);
+    sensor.setLedsPulseWidth(PULSE_WIDTH);
+    sensor.setSamplingRate(SAMPLING_RATE);
+    sensor.setHighresModeEnabled(HIGHRES_MODE);
+
+//    initProc();
+}
+
+
+
+void loop() {
+  M5.update();
+//  pox.update();
+  sensor.update();
+  readMode();
+  displayProc();
+  if(millis() - prePul_Time > PULOXY_INTERVAL) {//update
+//    pox.update();
+    while (sensor.getRawValues(&ir, &red)) {
+      pulVal = dcRemoval(ir, &pre_w, alpha);
+      prePul_Time = millis();
+    }
+  }
+//    infoScreen();
+//    M5.Lcd.setCursor(250, 5);
+//    m5Clear(250, 5, 20, 10);
+//    m5Print("10:36", 2, WHITE);
+//        M5.Lcd.setTextSize(2);
+//        M5.Lcd.setTextColor(WHITE);
+//        M5.Lcd.print("10:36");
+}
+//#define BEEP_FREQ_1 2000 // beep frequency for low bpm
+//#define BEEP_FREQ_2 4000 // beep frequency for high bpm
+void onBeatDetected()
+{ 
+  if(soundOn) {
+    M5.Speaker.tone(2000, 50);
+  }
+    Serial.println("Beat!");
+    
+//    m5Clear(0, 50, 100, 120);
+//    M5.Lcd.setCursor(5,50);
+//    M5.Lcd.drawBitmap(5, 50, 320, 240, (uint16_t *)imgName);
+}
+
+void m5Clear(int x, int y, int w, int h) {
+  M5.Lcd.fillRect(x, y, w, h, BLACK);
+}
+void m5Print(String content, int tsize, uint16_t color) {
+  M5.Lcd.setTextSize(tsize);
+  M5.Lcd.setTextColor(color);
+  M5.Lcd.print(content);
+}
+float minBPM = 4096;
+void infoScreen() {
+  
+//  pox.update();
+  // Asynchronously dump heart rate and oxidation levels to the serial
+  // For both, a value of 0 means "invalid"
+  if (millis() - preO2_Time > REPORTING_PERIOD_MS) {
+//    pox.update();
+    float bpm = pox.getHeartRate();
+    float spo2 = pox.getSpO2();
+    if(bpm!=0 && bpm < minBPM) {
+      minBPM = bpm;
+    }
+    if(bpm == 0) {
+      bpm = 50;
+    }
+    if(spo2 == 0) {
+      spo2 = 94;
+    }
+//    Serial.print("Heart rate:");
+//    Serial.print(pox.getHeartRate());
+//    Serial.print("bpm / SpO2:");
+//    Serial.print(pox.getSpO2());
+    Serial.print("Heart rate:");
+    Serial.print(bpm);
+    Serial.print("bpm / SpO2:");
+    Serial.print(spo2);
+      Serial.println("%");
+//    hRate= bpm;
+//    SpO2 = spo2;
+    sumHRate+=bpm;
+    sumSpO2+=spo2;
+    cnt++;
+ 
+    preO2_Time = millis();
+  }
+
+  if (preInfoDisplay_Time==0 ||millis() - preInfoDisplay_Time > DISPLAY_PERIOD_MS) {
+      float avgHRate = sumHRate/cnt;
+      float avgSpO2 = sumSpO2/cnt;
+      if(preInfoDisplay_Time==0) {
+        avgHRate = hRate;
+        avgSpO2 = SpO2;
+      }
+      
+      M5.Lcd.setCursor(130, 75);
+      m5Clear(130, 75, 200, 100);
+      m5Print(String((int)avgHRate), 8, WHITE);
+      M5.Lcd.setTextSize(3);
+      M5.Lcd.setTextColor(RED);
+      M5.Lcd.print("BPM");
+    
+      M5.Lcd.setCursor(5, 150);
+      m5Clear(5, 150, 300, 50);
+      if(millis() - preInfoDisplay_Time >= 60000) {
+        String minute = String((int)((millis() - preInfoDisplay_Time)/60000)) + "min(s)"; 
+        m5Print(minute, 2, WHITE);
+      }
+      else {
+        String seconds = String((int)((millis() - preInfoDisplay_Time)/1000)) + "secs"; 
+        m5Print(seconds, 2, WHITE);
+      }
+      String prePulVal = " ago: " + String(preAvgHRate) + "bpm";
+      m5Print(prePulVal, 2, WHITE);
+    
+      M5.Lcd.setCursor(100, 200);
+      m5Clear(100, 200, 300, 50);
+      m5Print(String((int)avgSpO2), 3, WHITE);
+      m5Print("%", 3, WHITE);
+
+      
+//      Serial.print("cnt: ");
+//      Serial.println(cnt);
+//      Serial.print("sum: ");
+//      Serial.println(sumSpO2);
+      
+      preInfoDisplay_Time = millis();
+      sumHRate=0;
+      sumSpO2=0;
+      cnt=0;
+      preAvgHRate=avgHRate;
+  }
+}
+
+
+void graphScreen() {
+  sensor.update();
+  static int highCnt, lowCnt, bpmCnt;
+//  static int bpmSum, bpmMax, bpmMin, bpmCnt, bpmAvg, bpmMaxTmp, bpmMinTmp;
+  static int bpm;
+  if(millis() - prePul_Time > PULOXY_INTERVAL) {//update      
+//        pox.update();
+//        bpm = pox.getHeartRate();
+    
+//        Serial.println("BPM: " + String(pox.getHeartRate()));
+//        if(mode == MODE_GRAPH) {
+//          lcdProc()  
+//        }
+    
+//    sensor.update();
+    float avg =  0;
+    if (meanDiffFilter.count != 0) {
+      avg = meanDiffFilter.sum/meanDiffFilter.count;
+    }
+    while (sensor.getRawValues(&ir, &red)) {
+      pulVal = dcRemoval(ir, &pre_w, alpha);
+//      if(pulVal > 200 || pulVal <-200) {
+//        pulVal = avg;
+//      }
+//      else if(pulVal <-200) {
+//        pulVal = -1000;
+//      }
+      prePul_Time = millis();
+    }
+    Serial.println("Val: " + String(pulVal));
+    pulVal = meanDiff(pulVal, &meanDiffFilter);
+    lowPassButterworthFilter(pulVal, &butterworthFilter);
+    pulVal = butterworthFilter.result;
+//        //clear next vitical line
+    M5.Lcd.drawLine(nextCursor, GRAPH_Y_MIN, nextCursor, GRAPH_Y_MAX, GRAPH_BG);
+    M5.Lcd.drawLine(nextCursor, GRAPH_Y_MIDLINE, nextCursor, GRAPH_Y_MIDLINE, GRAPH_MIDLINE);
+    M5.Lcd.drawLine(curCursor, graphYFilter(prePulVal), curCursor, graphYFilter(pulVal), GRAPH_FG);
+    curCursor = nextCursor;
+    nextCursor++;
+    curCursor = curCursor%GRAPH_X_MAX;
+    nextCursor = nextCursor%GRAPH_X_MAX;
+    if(nextCursor == 0) {
+      nextCursor = GRAPH_X_MIN;
+    }
+//        Serial.print(nextCursor);
+    if(curCursor == 0) {// clear 1st virtical line area
+      curCursor = GRAPH_X_MIN;
+      M5.Lcd.drawLine(GRAPH_X_MIN,GRAPH_Y_MIDLINE, GRAPH_X_MIN, GRAPH_Y_MIDLINE + GRAPH_Y_MAX, GRAPH_BG);
+      nextCursor = GRAPH_X_MIN+1;
+    }
+    
+    prePulVal = pulVal;
+    prePul_Time = millis();
+  }
+}
+
+void initProc() {
+  M5.Lcd.clear();
+  initScreen();
+  initSensor();  
+}
+
+void initScreen() {
+  M5.Lcd.clear();
+  switch(displayMode) {
+    case INFO_MODE:
+      M5.Lcd.setCursor(5, 0);
+      m5Print("Heart Rate", 3, RED);
+      M5.Lcd.drawBitmap(5, 50, 320, 240, (uint16_t *)imgName);
+      M5.Lcd.setCursor(5, 200);
+      m5Print("SpO2: ", 3, WHITE);
+      break;
+    case GRAPH_MODE:
+      M5.Lcd.drawLine(GRAPH_X_MIN, GRAPH_Y_MIDLINE, GRAPH_X_MAX, GRAPH_Y_MIDLINE, GRAPH_MIDLINE);
+      break;
+  }
+}
+
+void initSensor() {
+  switch(displayMode) {
+    case INFO_MODE:
+    
+      break;
+    case GRAPH_MODE:
+      static float pre_w;
+      prePul_Time = millis();
+//      bpm = 0;
+//      highCnt = lowCnt = bpmCnt = 0;
+      curCursor = nextCursor = GRAPH_X_MIN;
+      nextCursor++;
+//      bpmMinTmp = MAX_BPM_VAL; //Temp val
+//      bpmMaxTmp = 0;      
+//      for(int i = 0; i < 20; i++) {
+//        //display waiting - setup screen
+//        while (sensor.getRawValues(&ir, &red)) {
+//          sensor.getRawValues(&ir, &red);
+//          prePulVal = dcRemoval(ir, &pre_w, alpha);
+//        }
+//        delay(10);
+//      }
+      break;
+  }
+}
+
+
+int graphYFilter(float v) {
+  int max, min;
+  max = 75;
+  min = -75;
+  v = round(v/2.5);
+//  if(v > max) v = max;
+//  if(v < min) v = min;
+  return((int)((GRAPH_Y_MIDLINE - v)));// - (((v - min) * GRAPH_Y_MAX) / (max - min))));
+}
+
+float dcRemoval(int x, float *pre_w, float alpha) {
+  float w = x + alpha*(*pre_w);
+//  Serial.println("x: " + String(x)+ "\t" + "w: " + String(w) + "\t" + "pre: " + String(*pre_w));
+  float result = w - *pre_w;
+  *pre_w = w;
+//  Serial.println(result);
+  return result;
+}
+
+float meanDiff(float v, MeanDiffFilter* filterValues)
+{
+  float avg = 0;
+
+  filterValues->sum -= filterValues->values[filterValues->index];
+  filterValues->values[filterValues->index] = v;
+  filterValues->sum += filterValues->values[filterValues->index];
+
+  filterValues->index++;
+  filterValues->index = filterValues->index % MEAN_FILTER_SIZE;
+
+  if(filterValues->count < MEAN_FILTER_SIZE)
+    filterValues->count++;
+    
+  avg = filterValues->sum / filterValues->count;
+//  Serial.println("avg:" + String(avg));
+  return avg - v;
+}
+
+void lowPassButterworthFilter(float x, ButterworthFilter * filterResult)
+{  
+  filterResult->v[0] = filterResult->v[1];
+
+  //Fs = 100Hz and Fc = 10Hz
+  filterResult->v[1] = (2.452372752527856026e-1 * x) + (0.50952544949442879485 * filterResult->v[0]);
+
+  //Fs = 100Hz and Fc = 4Hz
+  //filterResult->v[1] = (1.367287359973195227e-1 * x) + (0.72654252800536101020 * filterResult->v[0]); //Very precise butterworth filter 
+
+  filterResult->result = filterResult->v[0] + filterResult->v[1];
+}
+
+
+void readMode() {
+  if(M5.BtnA.wasReleased()){
+    Serial.println("A");
+    if(displayMode != INFO_MODE) {
+      displayMode = INFO_MODE;
+      preInfoDisplay_Time = 0;
+      initProc();
+      Serial.println("info");
+    }
+  }
+  if (M5.BtnC.wasReleased()){
+    Serial.println("C");
+    if(displayMode != GRAPH_MODE) {
+      displayMode = GRAPH_MODE;
+      initProc();
+      Serial.println("GRAPH");
+    }
+  }
+  if (M5.BtnB.wasReleased()){
+    Serial.println("sound mode change");
+    if(soundOn) {
+      soundOn = false;
+    }
+    else {
+      soundOn = true;
+    }
+  }
+  
+}
+void displayProc() {
+  switch(displayMode) {
+    case INFO_MODE:
+      infoScreen();
+      break;
+    case GRAPH_MODE:
+      graphScreen();
+//      M5.Lcd.clear();
+      break;
+  }
+}
