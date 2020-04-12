@@ -1,14 +1,27 @@
 #include <M5Stack.h>
 #include <Wire.h>
 #include <PubSubClient.h>
-#include "WiFi.h"
-#include "MAX30100_PulseOximeter.h"
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <MAX30100_PulseOximeter.h>
+//meomeo
+//char ssid[] = "ifdl";
+//char password[] = "hogeupip5";
+//const char *endpoint = "192.168.11.6";
 
-//char ssid[] = "ifdl5";
-//char password[] = "hogeupip5"
-//
-//char ssid[] = "A";
-//char password[] = "hogeupip5"
+char ssid[] = "A";
+char password[] = "cfkx3236";
+const char *endpoint = "192.168.43.131";
+// MQTT port
+const int port = 1883;
+char *deviceID = "M5Stack"; // Device ID must be unique for each device
+// topic that informs the message
+char *pubTopic = "/pulseoximeter";
+// topic waiting for message
+//char *subTopic = "/sub/M5Stack";
+WiFiClient httpsClient;
+PubSubClient mqttClient(httpsClient);
+
 
 #define imgName heart_icon2
 #define PicArray extern unsigned char
@@ -38,7 +51,7 @@ PicArray imgName[];
 
 
 
-PulseOximeter pox;
+//PulseOximeter pox;
 MAX30100 sensor;
 #define SAMPLING_RATE                       MAX30100_SAMPRATE_100HZ
 #define IR_LED_CURRENT                      MAX30100_LED_CURR_50MA
@@ -50,11 +63,12 @@ MAX30100 sensor;
 //global var
 int displayMode = -1;
 int soundOn = 0;
+int mqttSendOn = 0;
 //timestamp
 unsigned long prePul_Time, preO2_Time, preInfoDisplay_Time;
 //for graph
 float w, pre_w;
-float prePulVal, pulVal;
+float pre_irVal, irVal, redVal;
 int nextCursor, curCursor;
 uint16_t ir, red;
 float alpha = 0.95;
@@ -93,13 +107,30 @@ void setup() {
     M5.update();
     
     Serial.begin(115200);
-    Serial.print("Initializing pulse oximeter..");
-    if (!pox.begin()) {
-        Serial.println("FAILED");
-        for(;;);
-    } else {
-        Serial.println("SUCCESS");
+
+    // Start WiFi
+    Serial.println("Connecting to ");
+    Serial.print(ssid);
+    WiFi.begin(ssid, password);
+   
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
     }
+    // WiFi Connected
+    Serial.println("\nWiFi Connected.");
+    
+    mqttClient.setServer(endpoint, port);
+//    mqttClient.setCallback(callback);
+    connectMQTT();
+    
+    Serial.print("Initializing pulse oximeter..");
+//    if (!pox.begin()) {
+//        Serial.println("FAILED");
+//        for(;;);
+//    } else {
+//        Serial.println("SUCCESS");
+//    }
 //    pox.setOnBeatDetectedCallback(onBeatDetected);
     if (!sensor.begin()) {
         Serial.println("FAILED");
@@ -118,20 +149,51 @@ void setup() {
 }
 
 
+const int capacity = JSON_OBJECT_SIZE(3);
+char buffer[512];
 
 void loop() {
   M5.update();
 //  pox.update();
   sensor.update();
+  mqttLoop();
   readMode();
-  displayProc();
+
+  StaticJsonDocument<200> record;
+  record["did"] = 1;
+  record["stype"] = 1;
+  JsonObject val = record.createNestedObject("val");
+
+  //record for request-on: <did?>, msg:on
+  
+
   if(millis() - prePul_Time > PULOXY_INTERVAL) {//update
 //    pox.update();
+//    if (meanDiffFilter.count != 0) {
+//      avg = meanDiffFilter.sum/meanDiffFilter.count;
+//    }
     while (sensor.getRawValues(&ir, &red)) {
-      pulVal = dcRemoval(ir, &pre_w, alpha);
+      irVal = irFiltering(ir);
+//      redVal = red;
       prePul_Time = millis();
     }
+//    Serial.println("Val: " + String(irVal));
+    
+    val["ir"] = irVal;
+//    val["red"] = redVal;
+    serializeJson(record, buffer);
+    serializeJson(record, Serial);
+    Serial.println("");
+    if(mqttSendOn) {
+      mqttClient.publish("/pulseoximeter", buffer);
+      //publish + subcribe monitor/did 
+    }
+    
+    displayProc();
+    
+    pre_irVal = irVal;
   }
+  
 //    infoScreen();
 //    M5.Lcd.setCursor(250, 5);
 //    m5Clear(250, 5, 20, 10);
@@ -154,6 +216,30 @@ void onBeatDetected()
 //    M5.Lcd.drawBitmap(5, 50, 320, 240, (uint16_t *)imgName);
 }
 
+void connectMQTT() {
+    while (!mqttClient.connected()) {
+        if (mqttClient.connect(deviceID)) {
+            Serial.println("Connected.");
+            int qos = 0;
+//            mqttClient.subscribe(subTopic, qos);
+            Serial.println("Subscribed.");
+        } else {
+            Serial.print("Failed. Error state=");
+            Serial.print(mqttClient.state());
+            // Wait 5 seconds before retrying
+            delay(5000);
+        }
+    }
+}
+ 
+void mqttLoop() {
+    if (!mqttClient.connected()) {
+        connectMQTT();
+    }
+    mqttClient.loop();
+}
+
+
 void m5Clear(int x, int y, int w, int h) {
   M5.Lcd.fillRect(x, y, w, h, BLACK);
 }
@@ -170,8 +256,8 @@ void infoScreen() {
   // For both, a value of 0 means "invalid"
   if (millis() - preO2_Time > REPORTING_PERIOD_MS) {
 //    pox.update();
-    float bpm = pox.getHeartRate();
-    float spo2 = pox.getSpO2();
+    float bpm;// = pox.getHeartRate();
+    float spo2;// = pox.getSpO2();
     if(bpm!=0 && bpm < minBPM) {
       minBPM = bpm;
     }
@@ -224,8 +310,8 @@ void infoScreen() {
         String seconds = String((int)((millis() - preInfoDisplay_Time)/1000)) + "secs"; 
         m5Print(seconds, 2, WHITE);
       }
-      String prePulVal = " ago: " + String(preAvgHRate) + "bpm";
-      m5Print(prePulVal, 2, WHITE);
+      String preirVal = " ago: " + String(preAvgHRate) + "bpm";
+      m5Print(preirVal, 2, WHITE);
     
       M5.Lcd.setCursor(100, 200);
       m5Clear(100, 200, 300, 50);
@@ -248,11 +334,11 @@ void infoScreen() {
 
 
 void graphScreen() {
-  sensor.update();
+//  sensor.update();
   static int highCnt, lowCnt, bpmCnt;
 //  static int bpmSum, bpmMax, bpmMin, bpmCnt, bpmAvg, bpmMaxTmp, bpmMinTmp;
   static int bpm;
-  if(millis() - prePul_Time > PULOXY_INTERVAL) {//update      
+//  if(millis() - prePul_Time > PULOXY_INTERVAL) {//update      
 //        pox.update();
 //        bpm = pox.getHeartRate();
     
@@ -263,27 +349,11 @@ void graphScreen() {
     
 //    sensor.update();
     float avg =  0;
-    if (meanDiffFilter.count != 0) {
-      avg = meanDiffFilter.sum/meanDiffFilter.count;
-    }
-    while (sensor.getRawValues(&ir, &red)) {
-      pulVal = dcRemoval(ir, &pre_w, alpha);
-//      if(pulVal > 200 || pulVal <-200) {
-//        pulVal = avg;
-//      }
-//      else if(pulVal <-200) {
-//        pulVal = -1000;
-//      }
-      prePul_Time = millis();
-    }
-    Serial.println("Val: " + String(pulVal));
-    pulVal = meanDiff(pulVal, &meanDiffFilter);
-    lowPassButterworthFilter(pulVal, &butterworthFilter);
-    pulVal = butterworthFilter.result;
+    
 //        //clear next vitical line
     M5.Lcd.drawLine(nextCursor, GRAPH_Y_MIN, nextCursor, GRAPH_Y_MAX, GRAPH_BG);
     M5.Lcd.drawLine(nextCursor, GRAPH_Y_MIDLINE, nextCursor, GRAPH_Y_MIDLINE, GRAPH_MIDLINE);
-    M5.Lcd.drawLine(curCursor, graphYFilter(prePulVal), curCursor, graphYFilter(pulVal), GRAPH_FG);
+    M5.Lcd.drawLine(curCursor, graphYFilter(pre_irVal), curCursor, graphYFilter(irVal), GRAPH_FG);
     curCursor = nextCursor;
     nextCursor++;
     curCursor = curCursor%GRAPH_X_MAX;
@@ -298,9 +368,9 @@ void graphScreen() {
       nextCursor = GRAPH_X_MIN+1;
     }
     
-    prePulVal = pulVal;
-    prePul_Time = millis();
-  }
+//    pre_irVal = irVal;
+//    prePul_Time = millis();
+//  }
 }
 
 void initProc() {
@@ -343,7 +413,7 @@ void initSensor() {
 //        //display waiting - setup screen
 //        while (sensor.getRawValues(&ir, &red)) {
 //          sensor.getRawValues(&ir, &red);
-//          prePulVal = dcRemoval(ir, &pre_w, alpha);
+//          preirVal = dcRemoval(ir, &pre_w, alpha);
 //        }
 //        delay(10);
 //      }
@@ -360,6 +430,15 @@ int graphYFilter(float v) {
 //  if(v > max) v = max;
 //  if(v < min) v = min;
   return((int)((GRAPH_Y_MIDLINE - v)));// - (((v - min) * GRAPH_Y_MAX) / (max - min))));
+}
+
+float irFiltering(float ir) {
+  float irVal, result;
+  irVal = dcRemoval(ir, &pre_w, alpha);
+  irVal = meanDiff(irVal, &meanDiffFilter);
+  lowPassButterworthFilter(irVal, &butterworthFilter);
+  result = butterworthFilter.result;
+  return result;
 }
 
 float dcRemoval(int x, float *pre_w, float alpha) {
@@ -423,12 +502,14 @@ void readMode() {
     }
   }
   if (M5.BtnB.wasReleased()){
-    Serial.println("sound mode change");
-    if(soundOn) {
-      soundOn = false;
+    Serial.println("mqtt send mode change");
+    if(mqttSendOn) {
+      mqttSendOn = false;
+      //publish:on + subcribe monitor/did 
     }
     else {
-      soundOn = true;
+      mqttSendOn = true;
+      //publish:off + unsubcribe? 
     }
   }
   
