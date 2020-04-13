@@ -14,7 +14,7 @@ char password[] = "cfkx3236";
 const char *endpoint = "192.168.43.131";
 // MQTT port
 const int port = 1883;
-char *deviceID = "M5Stack"; // Device ID must be unique for each device
+char *deviceID = "1";// Device ID must be unique for each device
 // topic that informs the message
 char *pubTopic = "/pulseoximeter";
 // topic waiting for message
@@ -482,8 +482,10 @@ void lowPassButterworthFilter(float x, ButterworthFilter * filterResult)
   filterResult->result = filterResult->v[0] + filterResult->v[1];
 }
 
-
+StaticJsonDocument<200> requestMsg;
 void readMode() {
+  char* reqChannel = "/monitor/request";
+  char* resChannel = "/monitor/response/1";
   if(M5.BtnA.wasReleased()){
     Serial.println("A");
     if(displayMode != INFO_MODE) {
@@ -505,10 +507,20 @@ void readMode() {
     Serial.println("mqtt send mode change");
     if(mqttSendOn) {
       mqttSendOn = false;
+      requestMsg["req"] = "off";
+      requestMsg["targetID"] = "1";
+      serializeJson(requestMsg, buffer);
+      mqttClient.publish(reqChannel, buffer);
+      mqttClient.unsubscribe(resChannel);
       //publish:on + subcribe monitor/did 
     }
     else {
       mqttSendOn = true;
+      requestMsg["req"] = "on";
+      requestMsg["targetID"] = "1";
+      serializeJson(requestMsg, buffer);
+      mqttClient.publish(reqChannel, buffer);
+      mqttClient.subscribe(resChannel);
       //publish:off + unsubcribe? 
     }
   }
