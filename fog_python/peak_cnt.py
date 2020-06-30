@@ -39,10 +39,16 @@ def thresholding_algo(y, lag, threshold, influence):
 
 ir = []
 cur = conn.cursor()
+# read_sql = """ SELECT value->'ir'
+#                     FROM sensor_reading
+#                     WHERE time >= '2020-01-19 00:28:14' and time <= '2020-01-19 00:28:24'
+#     """
 read_sql = """ SELECT value->'ir'
-                    FROM sensor_reading
-                    WHERE time >= '2020-01-19 00:28:08' and time <= '2020-01-19 00:28:30'
-    """
+                            FROM sensor_reading
+                            WHERE device_id = 1
+                            ORDER BY TIME DESC LIMIT 1000
+            """
+
 try:
     cur.execute(read_sql)
     rows = cur.fetchall()
@@ -50,7 +56,8 @@ try:
     # print(rows)
     # print('.')
     # print(rows[1][0])
-    
+    for i in range(0, 30):
+        ir.append(0)
     for row in rows:
         ir.append(row[0])
     #     print(row)
@@ -67,8 +74,8 @@ y = np.array(ir)
 
 # Settings: lag = 30, threshold = 5, influence = 0
 lag = 30
-threshold = 2.6
-influence = 0.5
+threshold = 2.5
+influence = 0.3
 
 # Run algo with settings from above
 result = thresholding_algo(y, lag=lag, threshold=threshold, influence=influence)
