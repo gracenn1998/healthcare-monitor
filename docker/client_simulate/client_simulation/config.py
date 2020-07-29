@@ -1,6 +1,6 @@
 from configparser import ConfigParser
 
-def configDTB(filename='database.ini', section='postgresql'):
+def configDTB(filename='client_simulation/database.ini', section='postgresql'):
     parser=ConfigParser()
     parser.read(filename)
 
@@ -19,7 +19,7 @@ def configDTB(filename='database.ini', section='postgresql'):
 
     return db
 
-def configMQTT(filename='mqtt.ini', section='mosquitto'):
+def configMQTT(filename='client_simulation/mqtt.ini', section='mosquitto'):
     parser=ConfigParser()
     parser.read(filename)
 
