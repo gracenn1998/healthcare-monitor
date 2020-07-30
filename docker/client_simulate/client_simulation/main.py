@@ -23,7 +23,8 @@ peakAnalyze= {}
 
 
 if __name__ == '__main__':
-    deviceID = "simulatedC1"
+    print('helu')
+    deviceID = input("please enter a device id: ")#"simulatedC1"
     params = config.configMQTT()
     client = mqtt.Client(deviceID)
     pubChannel = "/pulseoximeter"
